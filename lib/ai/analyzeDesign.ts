@@ -11,6 +11,7 @@ import { detectOCR, sampleTextColor, type OcrBox } from "./ocr";
 import { loadImageData, type Box } from "@/lib/fabric/coverPatch";
 import { refineTextBox } from "./textRegions";
 import { detectModelOCR, type ModelTextBox } from "./modelOcr";
+import { detectShapesAroundTexts } from "./shapes";
 
 /**
  * The single boundary the UI knows about for design detection.
@@ -50,26 +51,72 @@ export async function analyzeDesign(
         ? refineVisionTexts(vision.texts, imageData)
         : linesToTexts(ocr.lines, imageData);
 
-  // Erase regions: union of EVERY source for maximum coverage — OCR words
-  // (tight), merged text boxes (Vision recall, catches low-contrast text OCR
-  // misses like badges), and element boxes (buttons/logos). Broader mask hides
-  // more; a little smear is an acceptable trade for fully hiding the text.
+  // Shapes (buttons/pills) detected from the pixels around each text — accurate
+  // position + size, exactly like the text pass. Vision's own shape boxes are
+  // unreliable, so we build elements from these instead.
+  const shapeBoxes = imageData
+    ? detectShapesAroundTexts(
+        imageData,
+        texts.map((t) => ({ x: t.x, y: t.y, width: t.width, height: t.height })),
+      )
+    : [];
+  const elements: DesignElement[] = shapeBoxes.map((s) => ({
+    id: uuidv4(),
+    type: "rectangle" as ElementType,
+    x: s.x,
+    y: s.y,
+    width: s.width,
+    height: s.height,
+    fill: s.fill,
+    cornerRadius: s.cornerRadius, // measured from the image (pill vs rounded-rect)
+    rotation: 0,
+    confidence: 1,
+  }));
+
+  // Re-colour any text that sits ON a detected shape against that shape's fill.
+  // The default (ring outside the text) is right for text over a gradient/photo,
+  // but a highlight box whose bounds reach a photo would mis-read there — so for
+  // text inside a shape we sample against the known fill instead.
+  if (imageData) {
+    for (const t of texts) {
+      const cx = t.x + t.width / 2;
+      const cy = t.y + t.height / 2;
+      const host = elements.find(
+        (e) => e.fill && cx >= e.x && cx <= e.x + e.width && cy >= e.y && cy <= e.y + e.height,
+      );
+      if (host) {
+        t.color = sampleTextColor(
+          imageData,
+          { x: t.x, y: t.y, width: t.width, height: t.height },
+          host.fill,
+        ).color;
+      }
+    }
+  }
+
+  // Erase regions. Prefer the model's TIGHT per-line boxes over the grouped
+  // text boxes: a grouped block's box spans the widest line, so erasing it would
+  // wipe (and blur) far more of a photo behind semi-transparent text than the
+  // glyphs actually cover. Tesseract words are only added as a fallback when the
+  // model is unavailable — on a photo Tesseract hallucinates "words" (on a face,
+  // brickwork, …) that would erase into visible blur patches where no text is.
+  const textMask =
+    modelBoxes.length > 0
+      ? modelBoxes.map((b) => ({ x: b.x, y: b.y, width: b.width, height: b.height }))
+      : [
+          ...ocr.words.map((w) => ({ x: w.x, y: w.y, width: w.width, height: w.height })),
+          ...texts.map((t) => ({ x: t.x, y: t.y, width: t.width, height: t.height })),
+        ];
   const maskBoxes = [
-    ...ocr.words.map((w) => ({ x: w.x, y: w.y, width: w.width, height: w.height })),
-    ...texts.map((t) => ({ x: t.x, y: t.y, width: t.width, height: t.height })),
-    ...vision.elements.map((e) => ({
-      x: e.x,
-      y: e.y,
-      width: e.width,
-      height: e.height,
-    })),
+    ...textMask,
+    ...elements.map((e) => ({ x: e.x, y: e.y, width: e.width, height: e.height })),
   ];
 
   return {
     width: size.width,
     height: size.height,
     texts,
-    elements: vision.elements,
+    elements,
     maskBoxes,
   };
 }
@@ -169,15 +216,28 @@ function buildTextsFromModel(
     const style = imageData
       ? sampleTextColor(imageData, merged)
       : { color: "#000000", bold: false };
+    const fontSize = Math.max(1, Math.round(median(owned.map((b) => b.height)) * 0.9));
+
+    // Vision's string can carry glyphs OCR's box didn't include (e.g. a "→").
+    // Widen the box to fit those extra chars so they stay on the same line
+    // instead of wrapping below.
+    const modelChars = owned.map((b) => b.text).join(" ").length;
+    const extraChars = Math.max(0, vt.text.length - modelChars);
+    const widthScale =
+      modelChars > 0 && extraChars > 0 ? (modelChars + extraChars + 1) / modelChars : 1;
+
     out.push({
       ...vt,
       x: merged.x,
       y: merged.y,
-      width: merged.width,
+      width: Math.round(merged.width * widthScale),
       height: merged.height,
       // Per-line height (not the multi-line block height) so the wrapped
       // Textbox renders lines at the original size.
-      fontSize: Math.max(1, Math.round(median(owned.map((b) => b.height)) * 0.9)),
+      fontSize,
+      // Match the original line spacing when the block wraps — Fabric's default
+      // is looser and leaves a visible gap between lines.
+      lineHeight: lineSpacingMultiplier(owned, fontSize),
       color: style.color,
       fontWeight: style.bold ? "700" : vt.fontWeight,
     });
@@ -216,6 +276,20 @@ function unionBox(boxes: { x: number; y: number; width: number; height: number }
   const x1 = Math.max(...boxes.map((b) => b.x + b.width));
   const y1 = Math.max(...boxes.map((b) => b.y + b.height));
   return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+}
+
+/**
+ * Fabric `lineHeight` that reproduces the original line spacing for a wrapped
+ * multi-line block. Spacing = median gap between consecutive line tops; Fabric
+ * renders a line at ≈ fontSize × lineHeight × 1.16, so we invert that. Undefined
+ * for a single line (keep Fabric's default).
+ */
+function lineSpacingMultiplier(lines: ModelTextBox[], fontSize: number): number | undefined {
+  if (lines.length < 2 || fontSize <= 0) return undefined;
+  const tops = lines.map((l) => l.y).sort((a, b) => a - b);
+  const gaps: number[] = [];
+  for (let i = 1; i < tops.length; i++) gaps.push(tops[i] - tops[i - 1]);
+  return Math.max(0.5, median(gaps) / (fontSize * 1.16));
 }
 
 /**

@@ -48,6 +48,9 @@ export interface DesignText {
   textAlign: TextAlign;
   italic?: boolean;
   underline?: boolean;
+  /** Fabric lineHeight multiplier, set for multi-line blocks so wrapped lines
+   * match the original spacing (default spacing is too loose). */
+  lineHeight?: number;
 }
 
 /** Non-text graphic elements we try to lift out of the flattened image. */

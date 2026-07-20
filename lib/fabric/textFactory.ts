@@ -27,6 +27,8 @@ export function createTextbox(t: DesignText): Textbox {
     textAlign: t.textAlign,
     fill: t.color,
     angle: t.rotation,
+    // Tighten wrapped-line spacing to the original when detection provides it.
+    ...(t.lineHeight ? { lineHeight: t.lineHeight } : {}),
     // Editable + selectable so the user can move, resize, and retype.
     editable: true,
     selectable: true,

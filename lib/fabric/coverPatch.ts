@@ -86,3 +86,40 @@ export function sampleBackgroundColor(img: ImageData, box: Box): string {
   };
   return `#${toHex(median(rs))}${toHex(median(gs))}${toHex(median(bs))}`;
 }
+
+/**
+ * The dominant color INSIDE a box — the median of its interior pixels. For text
+ * sitting on a highlight box/pill, most pixels are the box fill (the glyphs are
+ * a minority), so this returns the fill reliably even when the box's SURROUND is
+ * something else entirely (a photo, another color). That makes it the right
+ * reference both for the box's own color and for isolating the text on top —
+ * where a ring-outside sample gets fooled by whatever borders the box.
+ */
+export function dominantColor(img: ImageData, box: Box): string {
+  const { data, width, height } = img;
+  const x0 = Math.max(0, Math.round(box.x));
+  const y0 = Math.max(0, Math.round(box.y));
+  const x1 = Math.min(width, Math.round(box.x + box.width));
+  const y1 = Math.min(height, Math.round(box.y + box.height));
+  const stepX = Math.max(1, Math.floor((x1 - x0) / 40));
+  const stepY = Math.max(1, Math.floor((y1 - y0) / 40));
+
+  const rs: number[] = [];
+  const gs: number[] = [];
+  const bs: number[] = [];
+  for (let y = y0; y < y1; y += stepY) {
+    for (let x = x0; x < x1; x += stepX) {
+      const idx = (y * width + x) * 4;
+      rs.push(data[idx]);
+      gs.push(data[idx + 1]);
+      bs.push(data[idx + 2]);
+    }
+  }
+  if (rs.length === 0) return "#000000";
+
+  const median = (arr: number[]) => {
+    const s = [...arr].sort((a, b) => a - b);
+    return s[Math.floor(s.length / 2)];
+  };
+  return `#${toHex(median(rs))}${toHex(median(gs))}${toHex(median(bs))}`;
+}

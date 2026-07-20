@@ -169,8 +169,14 @@ function toHex(n: number): string {
 export function sampleTextColor(
   img: ImageData,
   box: Box,
+  bgHex?: string,
 ): { color: string; bold: boolean } {
-  const bg = hexToRgb(sampleBackgroundColor(img, box));
+  // Reference background: the ring just outside the box (good for text over a
+  // gradient/photo). Callers pass `bgHex` — the fill of a shape the text sits
+  // ON — when the ring would sample the wrong thing (a highlight box whose
+  // bounds reach a photo). That keeps low-contrast text-on-gradient correct
+  // while fixing text-on-highlight-box.
+  const bg = hexToRgb(bgHex ?? sampleBackgroundColor(img, box));
   const { data, width, height } = img;
 
   const x0 = Math.max(0, Math.round(box.x));

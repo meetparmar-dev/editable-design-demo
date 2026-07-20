@@ -1,0 +1,8 @@
+allowBuilds:
+  canvas: set this to true or false
+  sharp: true
+  tesseract.js: set this to true or false
+  unrs-resolver: true
+ignoredBuiltDependencies:
+  - sharp
+  - unrs-resolver

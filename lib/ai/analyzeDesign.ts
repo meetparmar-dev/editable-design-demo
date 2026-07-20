@@ -219,12 +219,16 @@ function buildTextsFromModel(
     const fontSize = Math.max(1, Math.round(median(owned.map((b) => b.height)) * 0.9));
 
     // Vision's string can carry glyphs OCR's box didn't include (e.g. a "→").
-    // Widen the box to fit those extra chars so they stay on the same line
-    // instead of wrapping below.
+    // For a SINGLE-line block, widen the box so those extra chars stay on the
+    // same line instead of wrapping below. Never for multi-line blocks: widening
+    // there changes the wrap and spreads the text out (a paragraph must keep its
+    // exact original width so it re-lays compactly, like the source).
     const modelChars = owned.map((b) => b.text).join(" ").length;
     const extraChars = Math.max(0, vt.text.length - modelChars);
     const widthScale =
-      modelChars > 0 && extraChars > 0 ? (modelChars + extraChars + 1) / modelChars : 1;
+      owned.length === 1 && modelChars > 0 && extraChars > 0
+        ? (modelChars + extraChars + 1) / modelChars
+        : 1;
 
     out.push({
       ...vt,
@@ -289,7 +293,10 @@ function lineSpacingMultiplier(lines: ModelTextBox[], fontSize: number): number 
   const tops = lines.map((l) => l.y).sort((a, b) => a - b);
   const gaps: number[] = [];
   for (let i = 1; i < tops.length; i++) gaps.push(tops[i] - tops[i - 1]);
-  return Math.max(0.5, median(gaps) / (fontSize * 1.16));
+  // Clamp to a single-spaced range. Raw gaps go wrong when OCR merges/misses a
+  // line (the gap then spans two line-pitches → double spacing); real single-
+  // spaced text lives around ~0.9–1.05, so we cap there and keep it tight.
+  return Math.min(1.05, Math.max(0.7, median(gaps) / (fontSize * 1.16)));
 }
 
 /**
